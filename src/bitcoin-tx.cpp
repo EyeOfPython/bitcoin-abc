@@ -16,6 +16,8 @@
 #include <policy/policy.h>
 #include <primitives/transaction.h>
 #include <script/script.h>
+#include <script/interpreter.h>
+#include <script/sigencoding.h>
 #include <script/sign.h>
 #include <util/moneystr.h>
 #include <util/strencodings.h>
@@ -83,6 +85,9 @@ static void SetupBitcoinTxArgs() {
                  "privatekeys=JSON object. "
                  "See signrawtransactionwithkey docs for format of sighash "
                  "flags, JSON objects.",
+                 false, OptionsCategory::COMMANDS);
+    gArgs.AddArg("benchin=N:AMOUNT",
+                 "Benchmark the given input (must specify amount for script execution)",
                  false, OptionsCategory::COMMANDS);
 
     gArgs.AddArg("load=NAME:FILENAME",
@@ -521,6 +526,64 @@ static void MutateTxDelOutput(CMutableTransaction &tx,
     tx.vout.erase(tx.vout.begin() + outIdx);
 }
 
+static void BenchTxInput(CMutableTransaction &tx,
+                         const std::string &strInput,
+                         const CChainParams &chainParams) {
+    std::vector<std::string> vStrInputParts;
+    boost::split(vStrInputParts, strInput, boost::is_any_of(":"));
+
+    if (vStrInputParts.size() != 2) {
+        throw std::runtime_error("TX input missing or too many separators");
+    }
+
+    int64_t inIdx;
+    if (!ParseInt64(vStrInputParts[0], &inIdx) || inIdx < 0 ||
+        inIdx >= static_cast<int64_t>(tx.vin.size())) {
+        throw std::runtime_error("Invalid TX input index '" + vStrInputParts[0] + "'");
+    }
+
+    Amount value = ExtractAndValidateValue(vStrInputParts[1]);
+    ScriptError error = ScriptError::UNKNOWN;
+    CTxIn &txin = tx.vin[inIdx];
+    std::vector<valtype> stack;
+    uint32_t flags = SCRIPT_VERIFY_NONE;
+    flags |= SCRIPT_VERIFY_P2SH;
+    flags |= SCRIPT_VERIFY_DERSIG;
+    flags |= SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY;
+    flags |= SCRIPT_VERIFY_CHECKSEQUENCEVERIFY;
+    flags |= SCRIPT_VERIFY_STRICTENC;
+    flags |= SCRIPT_ENABLE_SIGHASH_FORKID;
+    flags |= SCRIPT_VERIFY_LOW_S;
+    flags |= SCRIPT_VERIFY_NULLFAIL;
+    flags |= SCRIPT_VERIFY_CHECKDATASIG_SIGOPS;
+    flags |= SCRIPT_VERIFY_SIGPUSHONLY;
+    flags |= SCRIPT_VERIFY_CLEANSTACK;
+    flags |= SCRIPT_ENABLE_SCHNORR_MULTISIG;
+    flags |= SCRIPT_VERIFY_MINIMALDATA;
+
+    PrecomputedTransactionData txdata(tx);
+    EvalScript(stack, txin.scriptSig, flags, MutableTransactionSignatureChecker(&tx, inIdx, value, txdata));
+
+    const valtype &pubKeySerialized = stack.back();
+    CScript pubKey2(pubKeySerialized.begin(), pubKeySerialized.end());
+
+    CScript p2shScript = GetScriptForDestination(CScriptID(pubKey2));
+
+    int64_t nTimeStart = GetTimeMicros();
+    for (int32_t i = 0; i < 1000; ++i) {
+        VerifyScript(txin.scriptSig, p2shScript, flags, MutableTransactionSignatureChecker(&tx, inIdx, value, txdata), &error);
+        if (error != ScriptError::OK) {
+            throw std::runtime_error("Script exec error: '" + std::string(ScriptErrorString(error)) + "'");
+        }
+    }
+    int64_t nTimeEnd = GetTimeMicros();
+    int64_t nTimeTotal = nTimeEnd - nTimeStart;
+    
+    double dt = double(nTimeTotal) / 1000;
+
+    std::cout << "Execution time: " << dt << "us" << std::endl;
+}
+
 static const unsigned int N_SIGHASH_OPTS = 12;
 static const struct {
     const char *flagStr;
@@ -711,7 +774,7 @@ public:
     ~Secp256k1Init() { ECC_Stop(); }
 };
 
-static void MutateTx(CMutableTransaction &tx, const std::string &command,
+static bool MutateTx(CMutableTransaction &tx, const std::string &command,
                      const std::string &commandVal,
                      const CChainParams &chainParams) {
     std::unique_ptr<Secp256k1Init> ecc;
@@ -745,9 +808,13 @@ static void MutateTx(CMutableTransaction &tx, const std::string &command,
         RegisterLoad(commandVal);
     } else if (command == "set") {
         RegisterSet(commandVal);
+    } else if (command == "benchin") {
+        BenchTxInput(tx, commandVal, chainParams);
+        return false;
     } else {
         throw std::runtime_error("unknown command");
     }
+    return true;
 }
 
 static void OutputTxJSON(const CTransaction &tx) {
@@ -850,7 +917,8 @@ static int CommandLineRawTx(int argc, char *argv[],
                 value = arg.substr(eqpos + 1);
             }
 
-            MutateTx(tx, key, value, chainParams);
+            if (!MutateTx(tx, key, value, chainParams))
+                return nRet;
         }
 
         OutputTx(CTransaction(tx));

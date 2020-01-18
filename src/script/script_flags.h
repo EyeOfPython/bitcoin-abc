@@ -111,6 +111,12 @@ enum {
     // Note: The Segwit Recovery feature is a (currently moot) exception to
     // VERIFY_INPUT_SIGCHECKS
     SCRIPT_VERIFY_INPUT_SIGCHECKS = (1U << 22),
+
+    // Whether 128 bit integers can be used.
+    SCRIPT_ENABLE_INT128 = (1U << 28),
+
+    // Whether OP_MUL can be used.
+    SCRIPT_ENABLE_OP_MUL = (1U << 29),
 };
 
 #endif // BITCOIN_SCRIPT_SCRIPT_FLAGS_H

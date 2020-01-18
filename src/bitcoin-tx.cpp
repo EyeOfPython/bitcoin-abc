@@ -31,6 +31,8 @@
 #include <memory>
 
 static bool fCreateBlank;
+static bool fEnableInt128;
+static bool fEnableOpMul;
 static std::map<std::string, UniValue> registers;
 static const int CONTINUE_EXECUTION = -1;
 
@@ -45,6 +47,27 @@ static void SetupBitcoinTxArgs() {
     gArgs.AddArg("-txid",
                  "Output only the hex-encoded transaction id of the resultant "
                  "transaction.",
+                 false, OptionsCategory::OPTIONS);
+    gArgs.AddArg("-MAX_SCRIPT_ELEMENT_SIZE=N",
+                 "Set the maximum script element size",
+                 false, OptionsCategory::OPTIONS);
+    gArgs.AddArg("-MAX_OPS_PER_SCRIPT=N",
+                 "Set the maximum non-push ops per script",
+                 false, OptionsCategory::OPTIONS);
+    gArgs.AddArg("-MAX_PUBKEYS_PER_MULTISIG=N",
+                 "Set the maximum number of public keys per multisig",
+                 false, OptionsCategory::OPTIONS);
+    gArgs.AddArg("-MAX_SCRIPT_SIZE=N",
+                 "Set the maximum script length in bytes",
+                 false, OptionsCategory::OPTIONS);
+    gArgs.AddArg("-MAX_STACK_SIZE=N",
+                 "Set the maximum number of values on script interpreter stack",
+                 false, OptionsCategory::OPTIONS);
+    gArgs.AddArg("-ENABLE_INT128",
+                 "Enable int128 arithmetic",
+                 false, OptionsCategory::OPTIONS);
+    gArgs.AddArg("-ENABLE_OP_MUL",
+                 "Enable OP_MUL",
                  false, OptionsCategory::OPTIONS);
     SetupChainParamsBaseOptions();
 
@@ -86,7 +109,7 @@ static void SetupBitcoinTxArgs() {
                  "See signrawtransactionwithkey docs for format of sighash "
                  "flags, JSON objects.",
                  false, OptionsCategory::COMMANDS);
-    gArgs.AddArg("benchin=N:AMOUNT",
+    gArgs.AddArg("benchin=N:AMOUNT[:SCRIPTPUBKEY]",
                  "Benchmark the given input (must specify amount for script execution)",
                  false, OptionsCategory::COMMANDS);
 
@@ -128,6 +151,23 @@ static int AppInitRawTx(int argc, char *argv[]) {
     }
 
     fCreateBlank = gArgs.GetBoolArg("-create", false);
+    fEnableOpMul = gArgs.GetBoolArg("-ENABLE_OP_MUL", false);
+    fEnableInt128 = gArgs.GetBoolArg("-ENABLE_INT128", false);
+    if (gArgs.GetArg("-MAX_SCRIPT_ELEMENT_SIZE", -1) != -1) {
+        SetMaxScriptElementSize(gArgs.GetArg("-MAX_SCRIPT_ELEMENT_SIZE", -1));
+    }
+    if (gArgs.GetArg("-MAX_OPS_PER_SCRIPT", -1) != -1) {
+        SetMaxOpsPerScript(gArgs.GetArg("-MAX_OPS_PER_SCRIPT", -1));
+    }
+    if (gArgs.GetArg("-MAX_PUBKEYS_PER_MULTISIG", -1) != -1) {
+        SetMaxPubkeyPerMultisig(gArgs.GetArg("-MAX_PUBKEYS_PER_MULTISIG", -1));
+    }
+    if (gArgs.GetArg("-MAX_SCRIPT_SIZE", -1) != -1) {
+        SetMaxScriptSize(gArgs.GetArg("-MAX_SCRIPT_SIZE", -1));
+    }
+    if (gArgs.GetArg("-MAX_STACK_SIZE", -1) != -1) {
+        SetMaxStackSize(gArgs.GetArg("-MAX_STACK_SIZE", -1));
+    }
 
     if (argc < 2 || HelpRequested(gArgs)) {
         // First part of help message is specific to this utility
@@ -532,7 +572,7 @@ static void BenchTxInput(CMutableTransaction &tx,
     std::vector<std::string> vStrInputParts;
     boost::split(vStrInputParts, strInput, boost::is_any_of(":"));
 
-    if (vStrInputParts.size() != 2) {
+    if (vStrInputParts.size() < 2 || vStrInputParts.size() > 3) {
         throw std::runtime_error("TX input missing or too many separators");
     }
 
@@ -560,18 +600,42 @@ static void BenchTxInput(CMutableTransaction &tx,
     flags |= SCRIPT_VERIFY_CLEANSTACK;
     flags |= SCRIPT_ENABLE_SCHNORR_MULTISIG;
     flags |= SCRIPT_VERIFY_MINIMALDATA;
+    if (fEnableInt128)
+        flags |= SCRIPT_ENABLE_INT128;
+    if (fEnableOpMul)
+        flags |= SCRIPT_ENABLE_OP_MUL;
 
+    CScript scriptPubKey;
     PrecomputedTransactionData txdata(tx);
-    EvalScript(stack, txin.scriptSig, flags, MutableTransactionSignatureChecker(&tx, inIdx, value, txdata));
 
-    const valtype &pubKeySerialized = stack.back();
-    CScript pubKey2(pubKeySerialized.begin(), pubKeySerialized.end());
+    if (vStrInputParts.size() == 2) {
+        std::cout << "hex: " << HexStr(txin.scriptSig) << std::endl;
+        bool success = EvalScript(
+            stack, txin.scriptSig, flags, 
+            MutableTransactionSignatureChecker(&tx, inIdx, value, txdata),
+            &error);
+        if (!success) {
+            throw std::runtime_error(
+                "sigScript exec error: '" + std::string(ScriptErrorString(error)) + "'");
+        }
 
-    CScript p2shScript = GetScriptForDestination(CScriptID(pubKey2));
+        const valtype &pubKeySerialized = stack.back();
+        CScript pubKey2(pubKeySerialized.begin(), pubKeySerialized.end());
+
+        scriptPubKey = GetScriptForDestination(CScriptID(pubKey2));
+    } else if (vStrInputParts.size() == 3) {
+        std::vector<uint8_t> pubKeySerialized = ParseHex(vStrInputParts[2]);
+        scriptPubKey = CScript(pubKeySerialized.begin(), pubKeySerialized.end());
+    }
 
     int64_t nTimeStart = GetTimeMicros();
-    for (int32_t i = 0; i < 1000; ++i) {
-        VerifyScript(txin.scriptSig, p2shScript, flags, MutableTransactionSignatureChecker(&tx, inIdx, value, txdata), &error);
+    int64_t nRuns = 100;
+    for (int32_t i = 0; i < nRuns; ++i) {
+        VerifyScript(
+            txin.scriptSig, scriptPubKey, flags, 
+            MutableTransactionSignatureChecker(&tx, inIdx, value, txdata),
+            &error
+        );
         if (error != ScriptError::OK) {
             throw std::runtime_error("Script exec error: '" + std::string(ScriptErrorString(error)) + "'");
         }
@@ -579,7 +643,7 @@ static void BenchTxInput(CMutableTransaction &tx,
     int64_t nTimeEnd = GetTimeMicros();
     int64_t nTimeTotal = nTimeEnd - nTimeStart;
     
-    double dt = double(nTimeTotal) / 1000;
+    double dt = double(nTimeTotal) / nRuns;
 
     std::cout << "Execution time: " << dt << "us" << std::endl;
 }

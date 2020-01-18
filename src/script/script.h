@@ -19,20 +19,22 @@
 #include <string>
 #include <vector>
 
+#include <boost/multiprecision/cpp_int.hpp> 
+
 // Maximum number of bytes pushable to the stack
-static const unsigned int MAX_SCRIPT_ELEMENT_SIZE = 520;
+static unsigned int MAX_SCRIPT_ELEMENT_SIZE = 520;
 
 // Maximum number of non-push operations per script
-static const int MAX_OPS_PER_SCRIPT = 201;
+static int MAX_OPS_PER_SCRIPT = 201;
 
 // Maximum number of public keys per multisig
-static const int MAX_PUBKEYS_PER_MULTISIG = 20;
+static int MAX_PUBKEYS_PER_MULTISIG = 20;
 
 // Maximum script length in bytes
-static const int MAX_SCRIPT_SIZE = 10000;
+static int MAX_SCRIPT_SIZE = 10000;
 
 // Maximum number of values on script interpreter stack
-static const int MAX_STACK_SIZE = 1000;
+static int MAX_STACK_SIZE = 1000;
 
 // Threshold for nLockTime: below this value it is interpreted as block number,
 // otherwise as UNIX timestamp. Thresold is Tue Nov 5 00:53:20 1985 UTC
@@ -209,6 +211,10 @@ public:
         : std::runtime_error(str) {}
 };
 
+
+typedef boost::multiprecision::checked_int128_t script_int_t;
+typedef boost::multiprecision::checked_uint128_t script_uint_t;
+
 class CScriptNum {
     /**
      * Numeric opcodes (OP_1ADD, etc) are restricted to operating on 4-byte
@@ -220,12 +226,10 @@ class CScriptNum {
      * arithmetic is done or the result is interpreted as an integer.
      */
 public:
-    static const size_t MAXIMUM_ELEMENT_SIZE = 4;
-
-    explicit CScriptNum(const int64_t &n) { m_value = n; }
+    explicit CScriptNum(const script_int_t &n) { m_value = n; }
 
     explicit CScriptNum(const std::vector<uint8_t> &vch, bool fRequireMinimal,
-                        const size_t nMaxNumSize = MAXIMUM_ELEMENT_SIZE) {
+                        const size_t nMaxNumSize) {
         if (vch.size() > nMaxNumSize) {
             throw scriptnum_error("script number overflow");
         }
@@ -237,16 +241,16 @@ public:
 
     static bool IsMinimallyEncoded(
         const std::vector<uint8_t> &vch,
-        const size_t nMaxNumSize = CScriptNum::MAXIMUM_ELEMENT_SIZE);
+        const size_t nMaxNumSize);
 
     static bool MinimallyEncode(std::vector<uint8_t> &data);
 
-    inline bool operator==(const int64_t &rhs) const { return m_value == rhs; }
-    inline bool operator!=(const int64_t &rhs) const { return m_value != rhs; }
-    inline bool operator<=(const int64_t &rhs) const { return m_value <= rhs; }
-    inline bool operator<(const int64_t &rhs) const { return m_value < rhs; }
-    inline bool operator>=(const int64_t &rhs) const { return m_value >= rhs; }
-    inline bool operator>(const int64_t &rhs) const { return m_value > rhs; }
+    inline bool operator==(const script_int_t &rhs) const { return m_value == rhs; }
+    inline bool operator!=(const script_int_t &rhs) const { return m_value != rhs; }
+    inline bool operator<=(const script_int_t &rhs) const { return m_value <= rhs; }
+    inline bool operator<(const script_int_t &rhs) const { return m_value < rhs; }
+    inline bool operator>=(const script_int_t &rhs) const { return m_value >= rhs; }
+    inline bool operator>(const script_int_t &rhs) const { return m_value > rhs; }
 
     inline bool operator==(const CScriptNum &rhs) const {
         return operator==(rhs.m_value);
@@ -267,10 +271,10 @@ public:
         return operator>(rhs.m_value);
     }
 
-    inline CScriptNum operator+(const int64_t &rhs) const {
+    inline CScriptNum operator+(const script_int_t &rhs) const {
         return CScriptNum(m_value + rhs);
     }
-    inline CScriptNum operator-(const int64_t &rhs) const {
+    inline CScriptNum operator-(const script_int_t &rhs) const {
         return CScriptNum(m_value - rhs);
     }
     inline CScriptNum operator+(const CScriptNum &rhs) const {
@@ -280,18 +284,25 @@ public:
         return operator-(rhs.m_value);
     }
 
-    inline CScriptNum operator/(const int64_t &rhs) const {
+    inline CScriptNum operator/(const script_int_t &rhs) const {
         return CScriptNum(m_value / rhs);
     }
     inline CScriptNum operator/(const CScriptNum &rhs) const {
         return operator/(rhs.m_value);
     }
 
-    inline CScriptNum operator%(const int64_t &rhs) const {
+    inline CScriptNum operator%(const script_int_t &rhs) const {
         return CScriptNum(m_value % rhs);
     }
     inline CScriptNum operator%(const CScriptNum &rhs) const {
         return operator%(rhs.m_value);
+    }
+
+    inline CScriptNum operator*(const script_int_t &rhs) const {
+        return CScriptNum(m_value * rhs);
+    }
+    inline CScriptNum operator*(const CScriptNum &rhs) const {
+        return operator*(rhs.m_value);
     }
 
     inline CScriptNum &operator+=(const CScriptNum &rhs) {
@@ -301,7 +312,7 @@ public:
         return operator-=(rhs.m_value);
     }
 
-    inline CScriptNum operator&(const int64_t &rhs) const {
+    inline CScriptNum operator&(const script_int_t &rhs) const {
         return CScriptNum(m_value & rhs);
     }
     inline CScriptNum operator&(const CScriptNum &rhs) const {
@@ -313,25 +324,25 @@ public:
     }
 
     inline CScriptNum operator-() const {
-        assert(m_value != std::numeric_limits<int64_t>::min());
+        assert(m_value != std::numeric_limits<script_int_t>::min());
         return CScriptNum(-m_value);
     }
 
-    inline CScriptNum &operator=(const int64_t &rhs) {
+    inline CScriptNum &operator=(const script_int_t &rhs) {
         m_value = rhs;
         return *this;
     }
 
-    inline CScriptNum &operator+=(const int64_t &rhs) {
+    inline CScriptNum &operator+=(const script_int_t &rhs) {
         assert(
             rhs == 0 ||
-            (rhs > 0 && m_value <= std::numeric_limits<int64_t>::max() - rhs) ||
-            (rhs < 0 && m_value >= std::numeric_limits<int64_t>::min() - rhs));
+            (rhs > 0 && m_value <= std::numeric_limits<script_int_t>::max() - rhs) ||
+            (rhs < 0 && m_value >= std::numeric_limits<script_int_t>::min() - rhs));
         m_value += rhs;
         return *this;
     }
 
-    inline CScriptNum &operator-=(const int64_t &rhs) {
+    inline CScriptNum &operator-=(const script_int_t &rhs) {
         assert(
             rhs == 0 ||
             (rhs > 0 && m_value >= std::numeric_limits<int64_t>::min() + rhs) ||
@@ -340,7 +351,7 @@ public:
         return *this;
     }
 
-    inline CScriptNum &operator&=(const int64_t &rhs) {
+    inline CScriptNum &operator&=(const script_int_t &rhs) {
         m_value &= rhs;
         return *this;
     }
@@ -351,22 +362,22 @@ public:
         } else if (m_value < std::numeric_limits<int>::min()) {
             return std::numeric_limits<int>::min();
         }
-        return m_value;
+        return int(m_value);
     }
 
     std::vector<uint8_t> getvch() const { return serialize(m_value); }
 
-    static std::vector<uint8_t> serialize(const int64_t &value) {
+    static std::vector<uint8_t> serialize(const script_int_t &value) {
         if (value == 0) {
             return {};
         }
 
         std::vector<uint8_t> result;
         const bool neg = value < 0;
-        uint64_t absvalue = neg ? -value : value;
+        script_uint_t absvalue = neg ? script_uint_t(-value) : script_uint_t(value);
 
         while (absvalue) {
-            result.push_back(absvalue & 0xff);
+            result.push_back(uint8_t(absvalue & 0xff));
             absvalue >>= 8;
         }
 
@@ -388,26 +399,26 @@ public:
     }
 
 private:
-    static int64_t set_vch(const std::vector<uint8_t> &vch) {
+    static script_int_t set_vch(const std::vector<uint8_t> &vch) {
         if (vch.empty()) {
             return 0;
         }
 
-        int64_t result = 0;
+        script_int_t result = 0;
         for (size_t i = 0; i != vch.size(); ++i) {
-            result |= int64_t(vch[i]) << 8 * i;
+            result |= script_int_t(vch[i]) << 8 * i;
         }
 
         // If the input vector's most significant byte is 0x80, remove it from
         // the result's msb and return a negative.
         if (vch.back() & 0x80) {
-            return -int64_t(result & ~(0x80ULL << (8 * (vch.size() - 1))));
+            return -script_int_t(result & ~(0x80ULL << (8 * (vch.size() - 1))));
         }
 
         return result;
     }
 
-    int64_t m_value;
+    script_int_t m_value;
 };
 
 /**

@@ -83,6 +83,12 @@ using TransactionSignatureChecker =
 using MutableTransactionSignatureChecker =
     GenericTransactionSignatureChecker<CMutableTransaction>;
 
+void SetMaxScriptElementSize(int maxScriptElementSize);
+void SetMaxOpsPerScript(int maxOpsPerScript);
+void SetMaxPubkeyPerMultisig(int maxPubkeyPerMultisig);
+void SetMaxScriptSize(int maxScriptSize);
+void SetMaxStackSize(int maxStackSize);
+
 bool EvalScript(std::vector<std::vector<uint8_t>> &stack, const CScript &script,
                 uint32_t flags, const BaseSignatureChecker &checker,
                 ScriptExecutionMetrics &metrics, ScriptError *error = nullptr);

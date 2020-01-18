@@ -18,6 +18,9 @@
 #include <uint256.h>
 #include <util/bitmanip.h>
 
+#include <iostream>
+#include <util/strencodings.h>
+
 bool CastToBool(const valtype &vch) {
     for (size_t i = 0; i < vch.size(); i++) {
         if (vch[i] != 0) {
@@ -87,17 +90,34 @@ static bool IsOpcodeDisabled(opcodetype opcode, uint32_t flags) {
         case OP_INVERT:
         case OP_2MUL:
         case OP_2DIV:
-        case OP_MUL:
         case OP_LSHIFT:
         case OP_RSHIFT:
             // Disabled opcodes.
             return true;
-
+        case OP_MUL:
+            return !(flags & SCRIPT_ENABLE_OP_MUL);
         default:
             break;
     }
 
     return false;
+}
+
+
+void SetMaxScriptElementSize(int maxScriptElementSize) {
+    MAX_STACK_SIZE = maxScriptElementSize;
+}
+void SetMaxOpsPerScript(int maxOpsPerScript) {
+    MAX_OPS_PER_SCRIPT = maxOpsPerScript;
+}
+void SetMaxPubkeyPerMultisig(int maxPubkeyPerMultisig) {
+    MAX_PUBKEYS_PER_MULTISIG = maxPubkeyPerMultisig;
+}
+void SetMaxStackSize(int maxStackSize) {
+    MAX_STACK_SIZE = maxStackSize;
+}
+void SetMaxScriptSize(int maxScriptSize) {
+    MAX_SCRIPT_SIZE = maxScriptSize;
 }
 
 bool EvalScript(std::vector<valtype> &stack, const CScript &script,
@@ -121,6 +141,8 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
     }
     int nOpCount = 0;
     bool fRequireMinimal = (flags & SCRIPT_VERIFY_MINIMALDATA) != 0;
+
+    const size_t MAX_INTEGER_ELEMENT_SIZE = flags & SCRIPT_ENABLE_INT128 ? 16 : 4;
 
     try {
         while (pc < pend) {
@@ -514,7 +536,7 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                                 serror, ScriptError::INVALID_STACK_OPERATION);
                         }
                         int n =
-                            CScriptNum(stacktop(-1), fRequireMinimal).getint();
+                            CScriptNum(stacktop(-1), fRequireMinimal, MAX_INTEGER_ELEMENT_SIZE).getint();
                         popstack(stack);
                         if (n < 0 || n >= (int)stack.size()) {
                             return set_error(
@@ -661,7 +683,7 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                             return set_error(
                                 serror, ScriptError::INVALID_STACK_OPERATION);
                         }
-                        CScriptNum bn(stacktop(-1), fRequireMinimal);
+                        CScriptNum bn(stacktop(-1), fRequireMinimal, MAX_INTEGER_ELEMENT_SIZE);
                         switch (opcode) {
                             case OP_1ADD:
                                 bn += bnOne;
@@ -695,6 +717,7 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                     case OP_SUB:
                     case OP_DIV:
                     case OP_MOD:
+                    case OP_MUL:
                     case OP_BOOLAND:
                     case OP_BOOLOR:
                     case OP_NUMEQUAL:
@@ -711,8 +734,8 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                             return set_error(
                                 serror, ScriptError::INVALID_STACK_OPERATION);
                         }
-                        CScriptNum bn1(stacktop(-2), fRequireMinimal);
-                        CScriptNum bn2(stacktop(-1), fRequireMinimal);
+                        CScriptNum bn1(stacktop(-2), fRequireMinimal, MAX_INTEGER_ELEMENT_SIZE);
+                        CScriptNum bn2(stacktop(-1), fRequireMinimal, MAX_INTEGER_ELEMENT_SIZE);
                         CScriptNum bn(0);
                         switch (opcode) {
                             case OP_ADD:
@@ -739,6 +762,19 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                                                      ScriptError::MOD_BY_ZERO);
                                 }
                                 bn = bn1 % bn2;
+                                break;
+
+                            case OP_MUL:
+                                if (!(flags & SCRIPT_ENABLE_OP_MUL)) {
+                                    return set_error(serror,
+                                                     ScriptError::BAD_OPCODE);
+                                }
+                                try {
+                                    bn = bn1 * bn2;
+                                } catch (std::overflow_error) {
+                                    return set_error(serror,
+                                                     ScriptError::INVALID_NUMBER_RANGE);
+                                }
                                 break;
 
                             case OP_BOOLAND:
@@ -798,9 +834,9 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                             return set_error(
                                 serror, ScriptError::INVALID_STACK_OPERATION);
                         }
-                        CScriptNum bn1(stacktop(-3), fRequireMinimal);
-                        CScriptNum bn2(stacktop(-2), fRequireMinimal);
-                        CScriptNum bn3(stacktop(-1), fRequireMinimal);
+                        CScriptNum bn1(stacktop(-3), fRequireMinimal, MAX_INTEGER_ELEMENT_SIZE);
+                        CScriptNum bn2(stacktop(-2), fRequireMinimal, MAX_INTEGER_ELEMENT_SIZE);
+                        CScriptNum bn3(stacktop(-1), fRequireMinimal, MAX_INTEGER_ELEMENT_SIZE);
                         bool fValue = (bn2 <= bn1 && bn1 < bn3);
                         popstack(stack);
                         popstack(stack);
@@ -965,7 +1001,7 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                                 serror, ScriptError::INVALID_STACK_OPERATION);
                         }
                         const int nKeysCount =
-                            CScriptNum(stacktop(-idxKeyCount), fRequireMinimal)
+                            CScriptNum(stacktop(-idxKeyCount), fRequireMinimal, MAX_INTEGER_ELEMENT_SIZE)
                                 .getint();
                         if (nKeysCount < 0 ||
                             nKeysCount > MAX_PUBKEYS_PER_MULTISIG) {
@@ -986,7 +1022,7 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                                 serror, ScriptError::INVALID_STACK_OPERATION);
                         }
                         const int nSigsCount =
-                            CScriptNum(stacktop(-idxSigCount), fRequireMinimal)
+                            CScriptNum(stacktop(-idxSigCount), fRequireMinimal, MAX_INTEGER_ELEMENT_SIZE)
                                 .getint();
                         if (nSigsCount < 0 || nSigsCount > nKeysCount) {
                             return set_error(serror, ScriptError::SIG_COUNT);
@@ -1013,10 +1049,7 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                         if ((flags & SCRIPT_ENABLE_SCHNORR_MULTISIG) &&
                             stacktop(-idxDummy).size() != 0) {
                             // SCHNORR MULTISIG
-                            static_assert(
-                                MAX_PUBKEYS_PER_MULTISIG < 32,
-                                "Schnorr multisig checkbits implementation "
-                                "assumes < 32 pubkeys.");
+                            assert(MAX_PUBKEYS_PER_MULTISIG < 32);
                             uint32_t checkBits = 0;
 
                             // Dummy element is to be interpreted as a bitfield
@@ -1219,7 +1252,7 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
 
                         // Make sure the split point is appropriate.
                         uint64_t position =
-                            CScriptNum(stacktop(-1), fRequireMinimal).getint();
+                            CScriptNum(stacktop(-1), fRequireMinimal, MAX_INTEGER_ELEMENT_SIZE).getint();
                         if (position > data.size()) {
                             return set_error(serror,
                                              ScriptError::INVALID_SPLIT_RANGE);
@@ -1246,7 +1279,7 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                         }
 
                         uint64_t size =
-                            CScriptNum(stacktop(-1), fRequireMinimal).getint();
+                            CScriptNum(stacktop(-1), fRequireMinimal, MAX_INTEGER_ELEMENT_SIZE).getint();
                         if (size > MAX_SCRIPT_ELEMENT_SIZE) {
                             return set_error(serror, ScriptError::PUSH_SIZE);
                         }
@@ -1294,7 +1327,7 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                         CScriptNum::MinimallyEncode(n);
 
                         // The resulting number must be a valid number.
-                        if (!CScriptNum::IsMinimallyEncoded(n)) {
+                        if (!CScriptNum::IsMinimallyEncoded(n, MAX_INTEGER_ELEMENT_SIZE)) {
                             return set_error(serror,
                                              ScriptError::INVALID_NUMBER_RANGE);
                         }
@@ -1310,6 +1343,13 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                 return set_error(serror, ScriptError::STACK_SIZE);
             }
         }
+    } catch (std::overflow_error) {
+        return set_error(serror, ScriptError::INVALID_NUMBER_RANGE);
+    } catch (scriptnum_error ex) {
+        std::cout << "error: " << ex.what() << std::endl;
+        return set_error(serror, ScriptError::IMPOSSIBLE_ENCODING);
+    } catch (std::range_error) {
+        return set_error(serror, ScriptError::INVALID_NUMBER_RANGE);
     } catch (...) {
         return set_error(serror, ScriptError::UNKNOWN);
     }
@@ -1719,9 +1759,15 @@ bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
         return false;
     }
     if (stack.empty()) {
+        for (auto item = stack.begin(); item < stack.end(); ++item) {
+            std::cout << "item:" << HexStr(*item) << std::endl;
+        }
         return set_error(serror, ScriptError::EVAL_FALSE);
     }
     if (CastToBool(stack.back()) == false) {
+        for (auto item = stack.begin(); item < stack.end(); ++item) {
+            std::cout << "item:" << HexStr(*item) << std::endl;
+        }
         return set_error(serror, ScriptError::EVAL_FALSE);
     }
 
@@ -1776,6 +1822,9 @@ bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
         // softfork (and P2SH should be one).
         assert((flags & SCRIPT_VERIFY_P2SH) != 0);
         if (stack.size() != 1) {
+            for (auto item = stack.begin(); item < stack.end(); ++item) {
+                std::cout << "item:" << HexStr(*item) << std::endl;
+            }
             return set_error(serror, ScriptError::CLEANSTACK);
         }
     }
